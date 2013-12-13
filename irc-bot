@@ -1,0 +1,105 @@
+#!/bin/bash
+
+check_status()
+{
+  if [ $1 -ne 0 ] ; then
+    shift 
+    echo "FAILED: " "$*" >&2
+    exit 1
+  fi
+}
+
+usage()
+{
+  echo "$progname -s SERVER -c CHANNEL"
+  cat <<EOF
+
+Example usage: 
+  $ irc-bot -s irc.freenode.net -c rtems
+
+EOF
+  exit 1
+}
+
+# configuration
+path=/tmp/rtems-irc-bot
+server=					#server name in the form, eg "irc.server-name.net", see usage 
+channel=				#channel name with hashtag, eg "#rtems"
+nickname='rtems-git'
+bot_realname='Bot that relays commit messages from git.rtems.org'
+
+# parse arguments 
+while getopts s:c: OPT
+do
+  case "$OPT" in 
+    s) server=$OPTARG ;;
+    c) channel="#$OPTARG" ;;
+    *) usage ;;
+  esac
+done
+
+#error check, make sure right arguments were passed 
+test "X${server}" != "X"
+check_status $? No server provided
+
+test "X${channel}" != "X"
+check_status $? No channel provided
+
+# launch the bot
+while true
+do
+    # connect to the IRC server
+    ii -s "$server" -i "$path" -n "$nickname" -f "$bot_realname" &
+    pid="$!"
+	
+	# wait for connection	
+    #while ! test -p "$path/$server/in"; do sleep 1; done
+	sleep 5
+
+	# connect to the IRC channel    
+	echo "/j $channel" > "$path/$server/in"
+    file_out="$path/$server/$channel/out"
+	file_in="$path/$server/$channel/in"
+
+	# clean up files 
+	> $file_out
+	> $file_in
+
+	# monitor channel
+	tail -f --lines=1 $file_out | while read -r date time nick msg; do
+		# if msg is by the system ignore it
+		[[ "$nick" == '-!-' ]] && continue
+		# strip < and >. if msg is by ourself ignore it
+		nick="${nick:1:-1}"
+		[[ "$nick" == "$nickname" ]] && continue
+		#skip if message doesn't contain bot nick (we werent pinged)
+		[[ ! "$msg" =~ "$nickname" ]] && continue 
+			
+		### bot functionality ###
+
+		# if msg contains sha1 or short sha fetch commit
+		echo "$msg" | grep -o '[a-fA-F0-9]\{4,20\}' > /dev/null
+		if [ $? -eq 0 ] ; then
+			# match SHA1 between 4 and 20 characters
+			short_SHA=` echo "$msg" | grep -o '[a-fA-F0-9]\{4,\}'`
+			echo `git log --pretty=short -1 ${short_SHA}` > $file_in
+			SHA1=`git log --pretty=short -1 ${short_SHA} | grep -o '[a-fA-F0-9]\{20,\}'`
+			echo "http://git.rtems.org/rtems/commit/?id=${SHA1}" > $file_in
+		fi
+			
+		#bugzilla? messages prefixed with a pr 
+
+		#way to search for specific terms in git log, relay a specified
+		#number of patches, eg the last n with that term. 
+		#eg "rtems-git: sptests -n 3" would return a short brief of the last three commits
+		#with sptests in the the first line
+
+		#support for multiple repos
+
+		#print out the last x commits from a particular repo
+
+		
+	done
+    # if the bot disconnects, go back to square one
+    wait "$pid"
+done
